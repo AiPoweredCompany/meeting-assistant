@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transcription Audio</title>
+    <style>
+        /* Reset et styles de base */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Roboto, -apple-system, sans-serif;
+            background-color: #f8f9fa;
+            color: #333;
+            line-height: 1.6;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        /* Conteneur principal */
+        .container {
+            width: 100%;
+            max-width: 500px;
+            background-color: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+        }
+        
+        /* Titre */
+        h1 {
+            font-size: 1.8rem;
+            font-weight: 600;
+            color: #4a5568;
+            text-align: center;
+            margin-bottom: 15px;
+        }
+        
+        /* Groupe de boutons */
+        .button-group {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        
+        /* Styles des boutons */
+        button {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            width: 100%;
+        }
+        
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        /* Bouton Démarrer */
+        .start-btn {
+            background-color: #a5d8ff;
+            color: #1c7ed6;
+        }
+        
+        .start-btn:hover:not(:disabled) {
+            background-color: #91d1ff;
+        }
+        
+        /* Bouton Arrêter */
+        .stop-btn {
+            background-color: #ffc9c9;
+            color: #e03131;
+        }
+        
+        .stop-btn:hover:not(:disabled) {
+            background-color: #ffb8b8;
+        }
+        
+        /* Bouton Ouvrir */
+        .open-btn {
+            background-color: #d0ebff;
+            color: #228be6;
+        }
+        
+        .open-btn:hover {
+            background-color: #b8e1ff;
+        }
+        
+        /* Formulaire email */
+        .email-form {
+            margin-top: 30px;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 0;
+            font-weight: 500;
+            color: #4a5568;
+        }
+        
+        input[type="text"] {
+            width: 100%;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 500;
+            background-color: #f1f3f5;
+            color: #495057;
+            transition: all 0.2s ease;
+        }
+        
+        input[type="text"]:focus {
+            outline: none;
+            background-color: #e9ecef;
+        }
+        
+        .submit-btn {
+            background-color: #b2f2bb;
+            color: #2b8a3e;
+            margin-top: 10px;
+        }
+        
+        .submit-btn:hover {
+            background-color: #a1e9b0;
+        }
+        
+        /* Popup de sélection de fichier (masquée par défaut) */
+        #fileDialog {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .dialog-content {
+            background-color: white;
+            padding: 25px;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 400px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+        }
+        
+        .dialog-title {
+            font-size: 1.2rem;
+            margin-bottom: 20px;
+            color: #4a5568;
+        }
+        
+        .dialog-buttons {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        
+        .dialog-btn {
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 0.9rem;
+        }
+        
+        .cancel-btn {
+            background-color: #f1f3f5;
+            color: #495057;
+        }
+        
+        .confirm-btn {
+            background-color: #d0ebff;
+            color: #228be6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Transcription Audio</h1>
+        
+        <div class="button-group">
+            <button id="startBtn" class="start-btn">Démarrer la transcription</button>
+            <button id="stopBtn" class="stop-btn" disabled>Arrêter la transcription</button>
+            <button id="openBtn" class="open-btn">Ouvrir transcription / compte-rendu</button>
+        </div>
+        
+        <div class="email-form">
+            <div class="form-group">
+                <label for="email">Envoyer la transcription par email<br><small>ex: email1@exemple.com, email2@exemple.com</small></label>
+                <input type="text" id="email" placeholder="Entrez une ou plusieurs adresses email" multiple>
+            </div>
+            <button class="submit-btn">Envoyer</button>
+        </div>
+    </div>
+    
+    <!-- Popup de sélection de fichier -->
+    <div id="fileDialog">
+        <div class="dialog-content">
+            <h3 class="dialog-title">Sélectionner un fichier</h3>
+            <input type="file" id="fileInput" style="width: 100%; padding: 10px; border: 1px solid #e2e8f0; border-radius: 6px;">
+            <div class="dialog-buttons">
+                <button id="cancelBtn" class="dialog-btn cancel-btn">Annuler</button>
+                <button id="confirmBtn" class="dialog-btn confirm-btn">Ouvrir</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // État de la transcription
+        let isTranscribing = false;
+        
+        // Récupération des éléments DOM
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const openBtn = document.getElementById('openBtn');
+        const fileDialog = document.getElementById('fileDialog');
+        const cancelBtn = document.getElementById('cancelBtn');
+        const confirmBtn = document.getElementById('confirmBtn');
+        const fileInput = document.getElementById('fileInput');
+        
+        // Gestionnaire pour le bouton Démarrer
+        startBtn.addEventListener('click', () => {
+            isTranscribing = true;
+            startBtn.textContent = 'Transcription en cours...';
+            updateButtonStates();
+            console.log('Transcription démarrée');
+            // Ici, vous ajouteriez le code pour démarrer la transcription
+        });
+        
+        // Gestionnaire pour le bouton Arrêter
+        stopBtn.addEventListener('click', () => {
+            isTranscribing = false;
+            startBtn.textContent = 'Démarrer la transcription';
+            updateButtonStates();
+            console.log('Transcription arrêtée');
+            // Ici, vous ajouteriez le code pour arrêter la transcription
+        });
+        
+        // Gestionnaire pour le bouton Ouvrir
+        openBtn.addEventListener('click', () => {
+            fileDialog.style.display = 'flex';
+        });
+        
+        // Gestionnaire pour le bouton Annuler
+        cancelBtn.addEventListener('click', () => {
+            fileDialog.style.display = 'none';
+            fileInput.value = ''; // Réinitialiser la sélection de fichier
+        });
+        
+        // Gestionnaire pour le bouton Confirmer
+        confirmBtn.addEventListener('click', () => {
+            if (fileInput.files.length > 0) {
+                console.log('Fichier sélectionné:', fileInput.files[0].name);
+                // Ici, vous traiteriez le fichier sélectionné
+                fileDialog.style.display = 'none';
+            } else {
+                alert('Veuillez sélectionner un fichier');
+            }
+        });
+        
+        // Fonction pour mettre à jour l'état des boutons
+        function updateButtonStates() {
+            startBtn.disabled = isTranscribing;
+            stopBtn.disabled = !isTranscribing;
+        }
+        
+        // Fermer la popup si on clique en dehors
+        fileDialog.addEventListener('click', (e) => {
+            if (e.target === fileDialog) {
+                fileDialog.style.display = 'none';
+                fileInput.value = '';
+            }
+        });
+    </script>
+</body>
+</html>
