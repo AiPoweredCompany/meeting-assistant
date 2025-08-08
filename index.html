@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Transcription Audio</title>
+    <!-- EmailJS SDK -->
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
     <style>
         /* Reset et styles de base */
         * {
@@ -213,7 +215,7 @@
                 <label for="email">Envoyer la transcription par email<br><small>ex: email1@exemple.com, email2@exemple.com</small></label>
                 <input type="text" id="email" placeholder="Entrez une ou plusieurs adresses email" multiple>
             </div>
-            <button class="submit-btn">Envoyer</button>
+            <button class="submit-btn">Send Minutes</button>
         </div>
     </div>
     
@@ -230,6 +232,12 @@
     </div>
     
     <script>
+        // Initialisation de EmailJS
+        (function() {
+            // Remplacez "YOUR_PUBLIC_KEY" par votre clé publique EmailJS
+            emailjs.init("W0H2rJbDBgq1_Je5I"); // ⚠️ Remplacer par votre vraie clé publique
+        })();
+        
         // État de la transcription
         let isTranscribing = false;
         
@@ -279,6 +287,71 @@
                 fileDialog.style.display = 'none';
             } else {
                 alert('Veuillez sélectionner un fichier');
+            }
+        });
+        
+        // Gestionnaire pour le bouton Envoyer (email)
+        const emailInput = document.getElementById('email');
+        const submitBtn = document.querySelector('.submit-btn');
+        
+        // Fonction de validation d'email
+        function validateEmail(email) {
+            const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            return re.test(String(email).toLowerCase());
+        }
+        
+        submitBtn.addEventListener('click', async () => {
+            const emailsText = emailInput.value.trim();
+            
+            if (!emailsText) {
+                alert('Veuillez entrer au moins une adresse email');
+                return;
+            }
+            
+            // Validation des emails
+            const emailList = emailsText.split(',').map(email => email.trim());
+            const invalidEmails = emailList.filter(email => !validateEmail(email));
+            
+            if (invalidEmails.length > 0) {
+                alert(`Certaines adresses email sont invalides: ${invalidEmails.join(', ')}`);
+                return;
+            }
+            
+            // Afficher un indicateur de chargement
+            const originalText = submitBtn.textContent;
+            submitBtn.textContent = 'Sending...';
+            submitBtn.disabled = true;
+            
+            try {
+                console.log('Envoi d\'email à:', emailList.join(', '));
+                
+                // Envoi d'email avec EmailJS
+                const templateParams = {
+                    to_email: emailList.join(', '),
+                    message: 'Hello,<br>You will find attached the minutes of our meeting.<br><br>Sincerly,<br>Olivier',
+                    from_name: 'Olivier',
+                    from_email: 'powered.ai.company@gmail.com',
+                    subject: 'meeting minutes'
+                };
+                
+                // Remplacer ces valeurs par vos propres identifiants EmailJS
+                // service_id: votre ID de service EmailJS
+                // template_id: votre ID de template EmailJS
+                const result = await emailjs.send(
+                    'meeting-minutes',  // ⚠️ Remplacer par votre vrai service ID
+                    'template_qr4x4vp', // ⚠️ Remplacer par votre vrai template ID
+                    templateParams
+                );
+                
+                console.log('Minutes sent successfully!', result.status, result.text);
+                alert('Meeting minutes sent successfully!');
+            } catch (error) {
+                console.error('Erreur:', error);
+                alert('Erreur lors de l\'envoi de l\'email: ' + error.message);
+            } finally {
+                // Restaurer l'état du bouton
+                submitBtn.textContent = originalText;
+                submitBtn.disabled = false;
             }
         });
         
