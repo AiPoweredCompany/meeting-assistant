@@ -154,7 +154,7 @@ country_code=US  # Change to your country code
 
 # Hardware mode (g = IEEE 802.11g)
 hw_mode=g
-channel=7
+channel=1
 
 # MAC address access control
 macaddr_acl=0
@@ -168,6 +168,10 @@ wpa_passphrase=raspberry  # Change this to your preferred password
 wpa_key_mgmt=WPA-PSK
 wpa_pairwise=TKIP
 rsn_pairwise=CCMP
+
+# 802.11n support
+ieee80211n=0  # Disable 802.11n for better compatibility
+wmm_enabled=0  # Disable WMM for better compatibility
 ```
 
 Save and exit (Ctrl+O, Enter, Ctrl+X)
@@ -186,20 +190,48 @@ DAEMON_CONF="/etc/hostapd/hostapd.conf"
 
 Save and exit (Ctrl+O, Enter, Ctrl+X)
 
-Enable hostapd to start on boot:
-
-```bash
-sudo systemctl unmask hostapd
-sudo systemctl enable hostapd
-```
-
-## Step 6: Disable wpa_supplicant for wlan0
+## Step 6: Disable wpa_supplicant and Create Custom hostapd Service
 
 To prevent wpa_supplicant from trying to connect wlan0 to other networks:
 
 ```bash
 sudo systemctl mask wpa_supplicant.service
 sudo systemctl stop wpa_supplicant.service
+```
+
+Create a custom hostapd service that runs directly in debug mode for better reliability:
+
+```bash
+sudo nano /etc/systemd/system/hostapd-custom.service
+```
+
+Add this content:
+
+```
+[Unit]
+Description=Hostapd IEEE 802.11 AP
+After=network.target systemd-networkd.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sleep 5
+ExecStartPre=/bin/ip link set wlan0 down
+ExecStartPre=/bin/ip link set wlan0 up
+ExecStart=/usr/sbin/hostapd -dd /etc/hostapd/hostapd.conf
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Save and exit (Ctrl+O, Enter, Ctrl+X)
+
+Disable the original hostapd service and enable our custom one:
+
+```bash
+sudo systemctl disable hostapd
+sudo systemctl enable hostapd-custom.service
 ```
 
 ## Step 7: Create Startup Script
@@ -214,27 +246,32 @@ Add the following content:
 
 ```bash
 #!/bin/bash
-# Access Point startup script
+# Simple AP startup script
 
-# Wait for network interfaces to be up
-sleep 10
+# Unblock wireless
+rfkill unblock wifi
 
-# Make sure wlan0 is up and in the correct mode
+# Configure wlan0
 ip link set wlan0 down
+sleep 2
+
+# Force AP mode with explicit channel
+iw dev wlan0 set type __ap
+sleep 1
+iw dev wlan0 set channel 1
+sleep 1
+
+# Bring up interface
 ip link set wlan0 up
+sleep 2
 
-# Check if hostapd is running, if not start it
-if ! systemctl is-active --quiet hostapd; then
-    systemctl restart hostapd
-fi
-
-# Check if dnsmasq is running, if not start it
+# Start dnsmasq if not running
 if ! systemctl is-active --quiet dnsmasq; then
     systemctl restart dnsmasq
 fi
 
 # Log the startup
-echo "Access point startup script executed at $(date)" >> /var/log/ap-startup.log
+echo "AP startup script executed at $(date)" >> /var/log/ap-startup.log
 ```
 
 Make the script executable:
@@ -255,10 +292,12 @@ Add the following content:
 [Unit]
 Description=Access Point Startup Script
 After=network.target systemd-networkd.service
-Wants=hostapd.service dnsmasq.service
+Before=hostapd-custom.service
+Wants=network-online.target
 
 [Service]
 Type=oneshot
+ExecStartPre=/bin/sleep 5
 ExecStart=/usr/local/bin/ap-startup.sh
 RemainAfterExit=yes
 
@@ -274,45 +313,41 @@ Enable the service:
 sudo systemctl enable ap-startup.service
 ```
 
-## Step 8: Create a systemd override for hostapd
+## Step 8: Reload systemd and Enable Services
 
-```bash
-sudo mkdir -p /etc/systemd/system/hostapd.service.d/
-sudo nano /etc/systemd/system/hostapd.service.d/override.conf
-```
-
-Add the following content:
-
-```
-[Unit]
-After=systemd-networkd.service
-```
-
-Save and exit (Ctrl+O, Enter, Ctrl+X)
-
-Reload systemd to recognize the changes:
+Reload systemd to recognize all the changes:
 
 ```bash
 sudo systemctl daemon-reload
 ```
 
-## Step 9: Start Services and Test
-
-Start all the services:
+Make sure all services are enabled to start on boot:
 
 ```bash
-sudo systemctl start dnsmasq
-sudo systemctl start hostapd
-sudo systemctl start ap-startup.service
+sudo systemctl enable systemd-networkd
+sudo systemctl enable dnsmasq
+sudo systemctl enable ap-startup.service
+sudo systemctl enable hostapd-custom.service
+```
+
+## Step 9: Start Services and Test
+
+Start all the services in the correct order:
+
+```bash
+sudo systemctl restart systemd-networkd
+sudo systemctl restart ap-startup.service
+sudo systemctl restart hostapd-custom.service
+sudo systemctl restart dnsmasq
 ```
 
 Check the status of all services:
 
 ```bash
 sudo systemctl status systemd-networkd
-sudo systemctl status hostapd
-sudo systemctl status dnsmasq
 sudo systemctl status ap-startup.service
+sudo systemctl status hostapd-custom.service
+sudo systemctl status dnsmasq
 ```
 
 Verify wlan0 is in AP mode:
@@ -321,7 +356,7 @@ Verify wlan0 is in AP mode:
 sudo iw dev wlan0 info
 ```
 
-You should see "type AP" in the output.
+You should see "type AP" in the output and the channel should be set to 1.
 
 ## Step 10: Test from Another Device
 
@@ -349,6 +384,18 @@ After the Raspberry Pi reboots:
 3. Verify you can communicate with the Raspberry Pi
 
 ## Troubleshooting
+
+### If RF-kill is blocking the wireless:
+
+Check if RF kill is blocking the wireless:
+```bash
+sudo rfkill list
+```
+
+If wlan0 is blocked, unblock it:
+```bash
+sudo rfkill unblock all
+```
 
 ### If the access point doesn't appear:
 
@@ -387,15 +434,28 @@ sudo systemctl stop wpa_supplicant
 sudo systemctl mask wpa_supplicant
 ```
 
-### Check if RF kill is blocking the wireless:
+Manually set wlan0 to AP mode and restart hostapd:
 ```bash
-sudo rfkill list
+sudo ip link set wlan0 down
+sudo iw dev wlan0 set type __ap
+sudo iw dev wlan0 set channel 1
+sudo ip link set wlan0 up
+sudo systemctl restart hostapd-custom.service
 ```
 
-If wlan0 is blocked, unblock it:
+### If hostapd fails to start after reboot:
+
+Check the logs for any errors:
 ```bash
-sudo rfkill unblock all
+sudo journalctl -u hostapd-custom.service
 ```
+
+Try running hostapd manually with debug output:
+```bash
+sudo hostapd -dd /etc/hostapd/hostapd.conf
+```
+
+This will show detailed output about what's preventing hostapd from starting.
 
 ## Additional Notes
 
@@ -411,6 +471,8 @@ Edit `/etc/dhcpcd.conf` and `/etc/systemd/network/12-wlan0.network` to use a dif
 
 ### Change the Wi-Fi channel:
 Edit `/etc/hostapd/hostapd.conf` and modify the `channel` parameter (1-11 for 2.4GHz)
+
+Note: Channel 1 is recommended for better compatibility with most devices
 
 ### Enable 5GHz (if supported by your hardware):
 Edit `/etc/hostapd/hostapd.conf` and change:

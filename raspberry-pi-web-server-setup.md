@@ -6,6 +6,7 @@ This guide will help you set up a lightweight web server on your Raspberry Pi 5 
 
 - Raspberry Pi 5 with Raspberry Pi OS (Bookworm)
 - Access point already configured and working (as per `rpi5-standalone-ap-setup.md`)
+- AP startup script created and enabled (as configured in the previous steps)
 - The `index.html` file you want to serve
 
 ## Step 1: Choose and Install a Web Server
@@ -80,11 +81,13 @@ sudo nano /etc/systemd/system/nginx-after-ap.service
 ```
 [Unit]
 Description=Start Nginx after Access Point
-After=ap-startup.service
+After=ap-startup.service hostapd.service
 Requires=ap-startup.service
+Wants=hostapd.service
 
 [Service]
 Type=oneshot
+ExecStartPre=/bin/sleep 10
 ExecStart=/bin/systemctl start nginx
 RemainAfterExit=yes
 
@@ -133,12 +136,50 @@ sudo reboot
 
 2. After the Raspberry Pi reboots:
    - Wait for the access point to start (1-2 minutes)
-   - Connect a mobile device to the "RaspberryPi_AP" Wi-Fi network
+   - Connect a mobile device to the "meeting-assistant" Wi-Fi network (or whatever SSID you configured)
    - Open a web browser on the mobile device
    - Navigate to `http://192.168.4.1`
    - You should see your web page load
 
+3. If the access point doesn't appear after reboot:
+   - SSH into your Raspberry Pi
+   - Check the status of the services:
+   ```bash
+   sudo systemctl status ap-startup.service
+   sudo systemctl status hostapd
+   sudo systemctl status dnsmasq
+   ```
+   - If hostapd is failing, manually run the startup script:
+   ```bash
+   sudo /usr/local/bin/ap-startup.sh
+   ```
+
 ## Troubleshooting
+
+### If the access point doesn't start after reboot:
+
+1. Check if RF kill is blocking the wireless:
+```bash
+sudo rfkill list
+```
+
+2. If blocked, unblock it:
+```bash
+sudo rfkill unblock all
+```
+
+3. Check hostapd status:
+```bash
+sudo systemctl status hostapd
+```
+
+4. Manually set wlan0 to AP mode:
+```bash
+sudo ip link set wlan0 down
+sudo iw dev wlan0 set type __ap
+sudo ip link set wlan0 up
+sudo systemctl restart hostapd
+```
 
 ### If the web page doesn't load:
 
@@ -170,7 +211,7 @@ Simply edit the files in the meeting-assistant directory and the changes will be
 
 To access your web page from any device connected to the Raspberry Pi's access point:
 
-1. Connect to the "RaspberryPi_AP" Wi-Fi network (password: raspberry, unless you changed it)
+1. Connect to the "meeting-assistant" Wi-Fi network (using the password you configured)
 2. Open a web browser
 3. Navigate to: `http://192.168.4.1`
 
