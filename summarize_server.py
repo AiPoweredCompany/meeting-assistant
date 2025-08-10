@@ -5,7 +5,8 @@ import requests
 
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "yarn-mistral:7b-128k")
+DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "yarn-mistral:latest")
+DEFAULT_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "3600"))  # 60 minutes
 
 
 PROMPT_TEMPLATE = """ You are an expert summarizer specialized in professional IT interviews between clients and providers, particularly around product development and workflow optimization. Your task is to:
@@ -95,14 +96,46 @@ def create_app() -> Flask:
         prompt = build_prompt_from_transcript(transcription_body)
 
         model = request.form.get("model", DEFAULT_MODEL)
+
+        # Optional generation options
+        options: dict = {}
+        def parse_int_field(name: str) -> int | None:
+            value = request.form.get(name)
+            if value is None:
+                return None
+            try:
+                return int(value)
+            except ValueError:
+                return None
+
+        num_ctx = parse_int_field("num_ctx")
+        if num_ctx is not None:
+            options["num_ctx"] = num_ctx
+
+        num_predict = parse_int_field("num_predict")
+        if num_predict is not None:
+            options["num_predict"] = num_predict
+
+        temperature = request.form.get("temperature")
+        if temperature is not None:
+            try:
+                options["temperature"] = float(temperature)
+            except ValueError:
+                pass
+
         payload = {
             "model": model,
             "prompt": prompt,
             "stream": False,
         }
+        if options:
+            payload["options"] = options
 
         try:
-            resp = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=600)
+            # Allow per-request override of timeout_seconds, else use default
+            timeout_override = parse_int_field("timeout_seconds")
+            effective_timeout = timeout_override if timeout_override and timeout_override > 0 else DEFAULT_TIMEOUT_SECONDS
+            resp = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=effective_timeout)
             resp.raise_for_status()
             data = resp.json()
             summary_text = data.get("response", "")

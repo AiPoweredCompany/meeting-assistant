@@ -291,6 +291,24 @@
                     formData.append('model', modelOverride);
                 }
 
+                // Optional overrides from URL: timeout_seconds, num_ctx, num_predict, temperature
+                const timeoutSeconds = params.get('timeout_seconds');
+                if (timeoutSeconds) {
+                    formData.append('timeout_seconds', timeoutSeconds);
+                }
+                const numCtx = params.get('num_ctx');
+                if (numCtx) {
+                    formData.append('num_ctx', numCtx);
+                }
+                const numPredict = params.get('num_predict');
+                if (numPredict) {
+                    formData.append('num_predict', numPredict);
+                }
+                const temperature = params.get('temperature');
+                if (temperature) {
+                    formData.append('temperature', temperature);
+                }
+
                 confirmBtn.disabled = true;
                 confirmBtn.textContent = 'Génération en cours...';
 

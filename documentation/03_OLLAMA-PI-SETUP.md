@@ -3,7 +3,7 @@
 This guide sets up Ollama to start at boot on your Raspberry Pi and adds a small Python backend that accepts a `.txt` transcript, builds the required prompt, calls Ollama, and returns a summary. The existing `index.html` button “Ouvrir” will upload the file and display the summary in a new tab.
 
 ### Overview
-- Ollama API runs on `127.0.0.1:11434` and serves models (e.g. `yarn-mistral:latest`).
+- Ollama API runs on `127.0.0.1:11434` and serves models (e.g. `mistral:latest`).
 - A Flask backend listens on `127.0.0.1:8000` at `POST /summarize` and calls Ollama.
 - The web page `meeting-assistant/index.html` sends the selected `.txt` transcript to the backend and opens the generated summary.
 
@@ -94,13 +94,13 @@ ollama --version
 
 Pull your model (example):
 ```
-ollama pull yarn-mistral:latest
+ollama pull mistral:latest
 ```
 
 Quick test:
 ```
 curl -X POST http://127.0.0.1:11434/api/generate -d '{
-  "model": "yarn-mistral:latest",
+  "model": "mistral:latest",
   "prompt": "Here is a story about llamas eating grass"
 }'
 ```
@@ -184,7 +184,7 @@ Wants=network-online.target
 [Service]
 User=olivier
 Group=olivier
-Environment="PYTHONUNBUFFERED=1" "OLLAMA_URL=http://127.0.0.1:11434" "OLLAMA_MODEL=yarn-mistral:latest"
+Environment="PYTHONUNBUFFERED=1" "OLLAMA_URL=http://127.0.0.1:11434" "OLLAMA_MODEL=mistral:latest"
 ExecStart="/home/olivier/Documents/AI powered company/meeting-notes/env/bin/python" \
          "/home/olivier/Documents/AI powered company/meeting-notes/meeting-assistant/summarize_server.py"
 Restart=always
@@ -214,10 +214,16 @@ The file `meeting-assistant/index.html` is wired so that clicking the “Ouvrir�
 - Uploads it as `multipart/form-data` to `http://127.0.0.1:8000/summarize`.
 - Opens a new tab with the summary returned by the backend.
 
-Optional: you can override the model via query string, e.g. open the page as:
+Optional: you can override generation via query string when opening the page:
 ```
-index.html?model=llama3:8b
+index.html?model=mistral:latest&timeout_seconds=3600&num_predict=512&num_ctx=8192&temperature=0.2
 ```
+Supported params forwarded to the backend:
+- `model` (e.g., `mistral:latest`)
+- `timeout_seconds` (seconds to wait for Ollama)
+- `num_predict` (max tokens to generate)
+- `num_ctx` (context window tokens; must be supported by the model)
+- `temperature` (sampling temperature)
 
 ---
 
@@ -247,7 +253,7 @@ curl -f http://127.0.0.1:8000/healthz
   - `ss -ltnp | grep 11434`
   - Stop local foreground runs and use the systemd service only.
 - Model not found / slow start:
-  - `ollama pull yarn-mistral:latest`
+  - `ollama pull mistral:latest`
   - First run compiles; subsequent runs are faster.
 - Backend errors:
   - Logs: `journalctl -u meeting-summarizer -e -n 200`
@@ -265,6 +271,6 @@ curl -f http://127.0.0.1:8000/healthz
 ---
 
 ### Questions
-- Do you want a different default model than `yarn-mistral:latest`?
+- Do you want a different default model than `mistral:latest`?
 - Should the backend listen on another interface/port (e.g., accessible from other devices)?
 
