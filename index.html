@@ -276,9 +276,50 @@
         // Gestionnaire pour le bouton Confirmer
         confirmBtn.addEventListener('click', () => {
             if (fileInput.files.length > 0) {
-                console.log('Fichier sélectionné:', fileInput.files[0].name);
-                // Ici, vous traiteriez le fichier sélectionné
-                fileDialog.style.display = 'none';
+                const selected = fileInput.files[0];
+                if (!selected.name.toLowerCase().endsWith('.txt')) {
+                    alert('Veuillez sélectionner un fichier .txt');
+                    return;
+                }
+
+                const formData = new FormData();
+                formData.append('file', selected);
+
+                const params = new URLSearchParams(window.location.search);
+                const modelOverride = params.get('model');
+                if (modelOverride) {
+                    formData.append('model', modelOverride);
+                }
+
+                confirmBtn.disabled = true;
+                confirmBtn.textContent = 'Génération en cours...';
+
+                fetch('http://127.0.0.1:8000/summarize', {
+                    method: 'POST',
+                    body: formData
+                })
+                    .then(async (res) => {
+                        const data = await res.json();
+                        if (!res.ok) {
+                            throw new Error(data.error || 'Erreur serveur');
+                        }
+
+                        const w = window.open('', '_blank');
+                        const escapeHtml = (s) => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+                        w.document.write('<pre style="white-space:pre-wrap;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \\'Liberation Mono\\', \\'Courier New\\', monospace; padding:16px;">' +
+                            escapeHtml(data.summary || '') +
+                            '</pre>');
+
+                        fileDialog.style.display = 'none';
+                        fileInput.value = '';
+                    })
+                    .catch((err) => {
+                        alert('Echec: ' + err.message);
+                    })
+                    .finally(() => {
+                        confirmBtn.disabled = false;
+                        confirmBtn.textContent = 'Ouvrir';
+                    });
             } else {
                 alert('Veuillez sélectionner un fichier');
             }
