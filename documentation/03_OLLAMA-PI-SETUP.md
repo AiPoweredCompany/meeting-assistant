@@ -3,7 +3,7 @@
 This guide sets up Ollama to start at boot on your Raspberry Pi and adds a small Python backend that accepts a `.txt` transcript, builds the required prompt, calls Ollama, and returns a summary. The existing `index.html` button “Ouvrir” will upload the file and display the summary in a new tab.
 
 ### Overview
-- Ollama API runs on `127.0.0.1:11434` and serves models (e.g. `yarn-mistral:7b-128k`).
+- Ollama API runs on `127.0.0.1:11434` and serves models (e.g. `yarn-mistral:latest`).
 - A Flask backend listens on `127.0.0.1:8000` at `POST /summarize` and calls Ollama.
 - The web page `meeting-assistant/index.html` sends the selected `.txt` transcript to the backend and opens the generated summary.
 
@@ -94,13 +94,13 @@ ollama --version
 
 Pull your model (example):
 ```
-ollama pull yarn-mistral:7b-128k
+ollama pull yarn-mistral:latest
 ```
 
 Quick test:
 ```
 curl -X POST http://127.0.0.1:11434/api/generate -d '{
-  "model": "yarn-mistral:7b-128k",
+  "model": "yarn-mistral:latest",
   "prompt": "Here is a story about llamas eating grass"
 }'
 ```
@@ -184,7 +184,7 @@ Wants=network-online.target
 [Service]
 User=olivier
 Group=olivier
-Environment="PYTHONUNBUFFERED=1" "OLLAMA_URL=http://127.0.0.1:11434" "OLLAMA_MODEL=yarn-mistral:7b-128k"
+Environment="PYTHONUNBUFFERED=1" "OLLAMA_URL=http://127.0.0.1:11434" "OLLAMA_MODEL=yarn-mistral:latest"
 ExecStart="/home/olivier/Documents/AI powered company/meeting-notes/env/bin/python" \
          "/home/olivier/Documents/AI powered company/meeting-notes/meeting-assistant/summarize_server.py"
 Restart=always
@@ -247,7 +247,7 @@ curl -f http://127.0.0.1:8000/healthz
   - `ss -ltnp | grep 11434`
   - Stop local foreground runs and use the systemd service only.
 - Model not found / slow start:
-  - `ollama pull yarn-mistral:7b-128k`
+  - `ollama pull yarn-mistral:latest`
   - First run compiles; subsequent runs are faster.
 - Backend errors:
   - Logs: `journalctl -u meeting-summarizer -e -n 200`
@@ -265,6 +265,6 @@ curl -f http://127.0.0.1:8000/healthz
 ---
 
 ### Questions
-- Do you want a different default model than `yarn-mistral:7b-128k`?
+- Do you want a different default model than `yarn-mistral:latest`?
 - Should the backend listen on another interface/port (e.g., accessible from other devices)?
 
