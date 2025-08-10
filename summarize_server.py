@@ -1,11 +1,12 @@
 import os
+import logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "yarn-mistral:latest")
+DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "mistral:latest")
 DEFAULT_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "3600"))  # 60 minutes
 
 
@@ -56,6 +57,8 @@ PROMPT_TEMPLATE = """ You are an expert summarizer specialized in professional I
 
 ---
 
+Output rules: Only produce the "Summary of Interview" section(s) as specified above. Do not repeat any of the instructions or template text in your answer. Do not include the label "Input Transcript" in the output.
+
 Input Transcript:  
 
 <TEXT TO ADD HERE>
@@ -72,6 +75,7 @@ def build_prompt_from_transcript(transcription_body: str) -> str:
 def create_app() -> Flask:
     app = Flask(__name__)
     CORS(app)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     @app.get("/healthz")
     def healthz():
@@ -132,13 +136,55 @@ def create_app() -> Flask:
             payload["options"] = options
 
         try:
+            # Optional debug info and chat mode
+            debug_enabled = request.form.get("debug") in ("1", "true", "yes") or os.getenv("DEBUG_SUMMARIZER") in ("1", "true", "yes")
+            use_chat = request.form.get("use_chat") in ("1", "true", "yes")
+
             # Allow per-request override of timeout_seconds, else use default
             timeout_override = parse_int_field("timeout_seconds")
             effective_timeout = timeout_override if timeout_override and timeout_override > 0 else DEFAULT_TIMEOUT_SECONDS
-            resp = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=effective_timeout)
-            resp.raise_for_status()
-            data = resp.json()
-            summary_text = data.get("response", "")
+            used_endpoint = "generate"
+
+            if use_chat:
+                # Convert to chat format: system = instructions/template, user = transcript
+                used_endpoint = "chat"
+                chat_payload = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": PROMPT_TEMPLATE.replace("Input Transcript:  \n\n<TEXT TO ADD HERE>\n\nPlease provide the summary now.\n\n ", "").strip()},
+                        {"role": "user", "content": f"Transcript (do not repeat):\n\n{transcription_body}\n\nPlease provide the structured summary now following the template."},
+                    ],
+                    "stream": False,
+                }
+                if options:
+                    chat_payload["options"] = options
+                resp = requests.post(f"{OLLAMA_URL}/api/chat", json=chat_payload, timeout=effective_timeout)
+                resp.raise_for_status()
+                data = resp.json()
+                message = data.get("message", {})
+                summary_text = message.get("content", "")
+            else:
+                resp = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=effective_timeout)
+                resp.raise_for_status()
+                data = resp.json()
+                summary_text = data.get("response", "")
+
+            if debug_enabled:
+                logging.info("Model: %s | Endpoint: %s | Timeout: %s | Options: %s", model, used_endpoint, effective_timeout, options or {})
+                logging.info("Prompt length: %d | Head: %r", len(prompt), prompt[:400])
+                # Return debug metadata in response (trim head to avoid huge payloads)
+                return jsonify({
+                    "summary": summary_text,
+                    "debug": {
+                        "model": model,
+                        "endpoint": used_endpoint,
+                        "timeout_seconds": effective_timeout,
+                        "options": options or {},
+                        "prompt_length": len(prompt),
+                        "prompt_head": prompt[:1000],
+                    }
+                })
+
             return jsonify({"summary": summary_text})
         except requests.RequestException as exc:
             return (
