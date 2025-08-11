@@ -118,7 +118,7 @@ First check if a service exists already:
 systemctl status ollama --no-pager || true
 ```
 
-- If it exists:
+- If it exists (installed by Ollama script on some systems):
 ```
 sudo systemctl enable --now ollama
 ```
@@ -138,6 +138,8 @@ ExecStart=/usr/local/bin/ollama serve
 Restart=always
 RestartSec=2
 Environment=OLLAMA_HOST=127.0.0.1:11434
+# Optional: place model store on SSD/NVMe to reduce SD wear (ensure path exists & is writable)
+# Environment=OLLAMA_MODELS=/mnt/ssd/ollama
 
 [Install]
 WantedBy=multi-user.target
@@ -150,6 +152,24 @@ Enable and start:
 sudo systemctl daemon-reload
 sudo systemctl enable --now ollama
 systemctl status ollama --no-pager
+```
+
+Verify on reboot:
+```
+sudo reboot
+# after reconnecting
+systemctl status ollama --no-pager
+ss -ltnp | grep 11434 || true
+journalctl -u ollama -b -n 50 --no-pager
+```
+
+Optional: expose Ollama API on your LAN (only if you understand the security implications). Change in the service:
+```
+Environment=OLLAMA_HOST=0.0.0.0:11434
+```
+Then reload and restart:
+```
+sudo systemctl daemon-reload && sudo systemctl restart ollama
 ```
 
 ---
@@ -184,7 +204,11 @@ Wants=network-online.target
 [Service]
 User=olivier
 Group=olivier
-Environment="PYTHONUNBUFFERED=1" "OLLAMA_URL=http://127.0.0.1:11434" "OLLAMA_MODEL=mistral:latest"
+Environment="PYTHONUNBUFFERED=1" \
+           "OLLAMA_URL=http://127.0.0.1:11434" \
+           "OLLAMA_MODEL=mistral:latest" \
+           "OLLAMA_TIMEOUT_SECONDS=3600"   # increase backend wait time (optional) \
+           "DEBUG_SUMMARIZER=0"            # set to 1 to include debug metadata in responses (optional)
 ExecStart="/home/olivier/Documents/AI powered company/meeting-notes/env/bin/python" \
          "/home/olivier/Documents/AI powered company/meeting-notes/meeting-assistant/summarize_server.py"
 Restart=always
@@ -204,7 +228,14 @@ systemctl status meeting-summarizer --no-pager
 
 Notes:
 - Paths contain spaces. Keep the quotes in `ExecStart` exactly.
-- The backend exposes `POST /summarize` expecting form-data `file=@...` with a `.txt`, and optional `model=...` to override the default model.
+- The backend exposes `POST /summarize` expecting form-data: `file=@...` (required, `.txt`), plus optional:
+  - `model` (override default model)
+  - `timeout_seconds` (per-request wait time)
+  - `num_predict` (max tokens to generate)
+  - `num_ctx` (context window tokens, model-dependent)
+  - `temperature` (sampling temperature)
+  - `debug=1` (include debug metadata and prompt head in JSON)
+  - `use_chat=1` (use chat endpoint with system/user split to reduce instruction echo)
 
 ---
 
@@ -214,9 +245,9 @@ The file `meeting-assistant/index.html` is wired so that clicking the “Ouvrir�
 - Uploads it as `multipart/form-data` to `http://127.0.0.1:8000/summarize`.
 - Opens a new tab with the summary returned by the backend.
 
-Optional: you can override generation via query string when opening the page:
+Optional: you can override generation via query string when opening the page (the page forwards these to the backend):
 ```
-index.html?model=mistral:latest&timeout_seconds=3600&num_predict=512&num_ctx=8192&temperature=0.2
+index.html?model=mistral:latest&timeout_seconds=3600&num_predict=512&num_ctx=8192&temperature=0.2&use_chat=1&debug=0
 ```
 Supported params forwarded to the backend:
 - `model` (e.g., `mistral:latest`)
@@ -224,6 +255,8 @@ Supported params forwarded to the backend:
 - `num_predict` (max tokens to generate)
 - `num_ctx` (context window tokens; must be supported by the model)
 - `temperature` (sampling temperature)
+- `use_chat` (set `1` to use chat formatting; can reduce prompt/template echo)
+- `debug` (set `1` to include debug metadata in JSON response)
 
 ---
 
@@ -231,6 +264,8 @@ Supported params forwarded to the backend:
 - The backend reads the entire `.txt` into a variable `transcription_body`.
 - It builds `prompt` by inserting `transcription_body` at the placeholder `<TEXT TO ADD HERE>` in your multi-language, structured summary instructions.
 - It calls `POST /api/generate` on Ollama with `{"model": ..., "prompt": ..., "stream": false}`.
+
+Tip: To further reduce the model echoing the instructions, the backend also supports chat mode (`use_chat=1`) which sends the instructions as `system` and the transcript as `user`.
 
 ---
 
@@ -246,6 +281,28 @@ curl -f http://127.0.0.1:8000/healthz
 3) Open `meeting-assistant/index.html` in a browser on the Pi.
 4) Click “Ouvrir”, select a `.txt` transcript, wait for generation, and a new tab should display the summary.
 
+Optional warm-up (first run can be slow while the model loads/compiles):
+```
+curl -sS -X POST http://127.0.0.1:11434/api/generate -d '{"model":"mistral:latest","prompt":"hi","stream":false}' | cat
+```
+
+Manual cURL testing examples:
+```
+# Long timeout & shorter output to finish faster
+curl -sS -F "file=@tests/false_transcription.txt" \
+     -F "timeout_seconds=3600" -F "num_predict=512" \
+     http://127.0.0.1:8000/summarize | jq -r .summary
+
+# Enable chat mode to reduce template echo
+curl -sS -F "file=@tests/false_transcription.txt" \
+     -F "use_chat=1" \
+     http://127.0.0.1:8000/summarize | jq -r .summary
+
+# Inspect prompt head and metadata (debug)
+curl -sS -F "file=@tests/false_transcription.txt" -F "debug=1" \
+     http://127.0.0.1:8000/summarize | jq .
+```
+
 ---
 
 ### 7) Troubleshooting
@@ -258,6 +315,10 @@ curl -f http://127.0.0.1:8000/healthz
 - Backend errors:
   - Logs: `journalctl -u meeting-summarizer -e -n 200`
   - Health: `curl -f http://127.0.0.1:8000/healthz`
+- Request timeouts:
+  - Increase `timeout_seconds` per request or set `OLLAMA_TIMEOUT_SECONDS=3600` in the service.
+  - Reduce `num_predict` (e.g., 256–512) and/or transcript length.
+  - Use warm-up call before long requests.
 - Memory pressure on Pi:
   - Increase swap (dphys-swapfile) if OOM occurs with 7B models.
 
