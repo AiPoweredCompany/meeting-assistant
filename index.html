@@ -232,6 +232,9 @@
     </div>
     
     <script>
+        // Base API: même hôte que cette page, port 5000
+        const API_BASE = window.location.protocol + '//' + window.location.hostname + ':5000';
+        
         // État de la transcription
         let isTranscribing = false;
         
@@ -251,12 +254,12 @@
             updateButtonStates();
             console.log('Transcription démarrée');
             // DEMO: appelle l'API pour détecter les micros puis démarre
-            fetch('http://127.0.0.1:5000/detect_mics')
+            fetch(API_BASE + '/detect_mics')
               .then(r => r.json())
               .then(data => {
                 const mics = data.mics || [];
                 const assignments = mics.map(m => ({ mic_id: m.mic_id, person_name: `Mic ${m.mic_id}`}));
-                return fetch('http://127.0.0.1:5000/start_transcription', {
+                return fetch(API_BASE + '/start_transcription', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ assignments })
@@ -281,7 +284,7 @@
             startBtn.textContent = 'Démarrer la transcription';
             updateButtonStates();
             console.log('Transcription arrêtée');
-            fetch('http://127.0.0.1:5000/stop_transcription', { method: 'POST' })
+            fetch(API_BASE + '/stop_transcription', { method: 'POST' })
               .catch(() => {})
               .finally(() => {
                 stopPolling();
@@ -400,7 +403,7 @@
         function startPolling() {
           if (pollTimer) return;
           pollTimer = setInterval(() => {
-            fetch('http://127.0.0.1:5000/get_transcriptions')
+            fetch(API_BASE + '/get_transcriptions')
               .then(r => r.json())
               .then(data => {
                 if (!data) return;
