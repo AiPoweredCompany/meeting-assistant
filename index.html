@@ -146,7 +146,7 @@
         }
         
         /* Popup de sélection de fichier (masquée par défaut) */
-        #fileDialog {
+        #fileDialog, #micDialog {
             display: none;
             position: fixed;
             top: 0;
@@ -164,7 +164,7 @@
             padding: 25px;
             border-radius: 12px;
             width: 90%;
-            max-width: 400px;
+            max-width: 600px;
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
         }
         
@@ -196,6 +196,11 @@
             background-color: #d0ebff;
             color: #228be6;
         }
+
+        /* Mic config list */
+        .mic-row { display: grid; grid-template-columns: 40px 60px 1fr 160px; gap: 10px; align-items: center; margin-bottom: 10px; }
+        .vu { height: 10px; background: #e9ecef; border-radius: 6px; overflow: hidden; }
+        .vu > span { display: block; height: 100%; width: 0%; background: #74c0fc; transition: width 0.2s; }
     </style>
 </head>
 <body>
@@ -203,7 +208,9 @@
         <h1>Transcription Audio</h1>
         
         <div class="button-group">
-            <button id="startBtn" class="start-btn">Démarrer la transcription</button>
+            <button id="micTestBtn" class="open-btn">Configurer / Tester les micros</button>
+            <button id="healthBtn" class="open-btn">Tester le serveur de transcription</button>
+            <button id="startBtn" class="start-btn" disabled>Démarrer la transcription</button>
             <button id="stopBtn" class="stop-btn" disabled>Arrêter la transcription</button>
             <button id="openBtn" class="open-btn">Ouvrir transcription / compte-rendu</button>
         </div>
@@ -230,6 +237,20 @@
             </div>
         </div>
     </div>
+
+    <!-- Popup configuration micros -->
+    <div id="micDialog">
+        <div class="dialog-content">
+            <h3 class="dialog-title">Configuration des micros</h3>
+            <div id="micList"></div>
+            <div class="dialog-buttons">
+                <button id="micStart" class="dialog-btn confirm-btn">Démarrer test</button>
+                <button id="micStop" class="dialog-btn cancel-btn">Arrêter test</button>
+                <button id="micSave" class="dialog-btn confirm-btn">Enregistrer</button>
+                <button id="micClose" class="dialog-btn cancel-btn">Fermer</button>
+            </div>
+        </div>
+    </div>
     
     <script>
         // Base API: même hôte que cette page, port 5000
@@ -242,29 +263,151 @@
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
         const openBtn = document.getElementById('openBtn');
+        const micTestBtn = document.getElementById('micTestBtn');
+        const healthBtn = document.getElementById('healthBtn');
         const fileDialog = document.getElementById('fileDialog');
         const cancelBtn = document.getElementById('cancelBtn');
         const confirmBtn = document.getElementById('confirmBtn');
         const fileInput = document.getElementById('fileInput');
+        const micDialog = document.getElementById('micDialog');
+        const micList = document.getElementById('micList');
+        const micStart = document.getElementById('micStart');
+        const micStop = document.getElementById('micStop');
+        const micSave = document.getElementById('micSave');
+        const micClose = document.getElementById('micClose');
         
+        // Etat de santé serveur et micros
+        let serverHealthy = false;
+        let availableMics = [];
+        let selectedMicIds = [];
+        const personNamesByMicId = new Map();
+        let micLevelsTimer = null;
+
+        function refreshPrereqs() {
+          const hasSelection = selectedMicIds && selectedMicIds.length > 0;
+          startBtn.disabled = !(serverHealthy && hasSelection) || isTranscribing;
+          stopBtn.disabled = !isTranscribing;
+        }
+
+        // Test serveur
+        healthBtn.addEventListener('click', async () => {
+          try {
+            const res = await fetch(API_BASE + '/healthz');
+            const data = await res.json();
+            serverHealthy = !!data.ok;
+            alert(serverHealthy ? 'Serveur OK' : ('Serveur non disponible: ' + (data.error || '')));
+          } catch (e) {
+            serverHealthy = false;
+            alert('Serveur non joignable');
+          }
+          refreshPrereqs();
+        });
+
+        // Config/test micros (VU-meter minimal)
+        micTestBtn.addEventListener('click', async () => {
+          try {
+            const micsRes = await fetch(API_BASE + '/detect_mics');
+            const micsData = await micsRes.json();
+            availableMics = micsData.mics || [];
+            if (availableMics.length === 0) {
+              alert('Aucun micro détecté');
+              refreshPrereqs();
+              return;
+            }
+            // Build inline list with checkboxes
+            selectedMicIds = availableMics.map(m => m.mic_id);
+            micList.innerHTML = availableMics.map(m => {
+              const currentName = personNamesByMicId.get(m.mic_id) || `Mic ${m.mic_id}`;
+              return `<div class="mic-row">
+                        <div><input type="checkbox" id="check-${m.mic_id}" checked /></div>
+                        <div>#${m.mic_id}</div>
+                        <input type="text" id="person-${m.mic_id}" value="${currentName}" />
+                        <div class="vu"><span id="vu-${m.mic_id}"></span></div>
+                      </div>`;
+            }).join('');
+            micDialog.style.display = 'flex';
+            // Start test on selected
+            const idsToTest = selectedMicIds;
+            await fetch(API_BASE + '/start_mic_test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mic_ids: idsToTest })});
+            if (micLevelsTimer) clearInterval(micLevelsTimer);
+            micLevelsTimer = setInterval(async () => {
+              try {
+                const lv = await fetch(API_BASE + '/mic_levels').then(r=>r.json());
+                const levels = lv.levels || {};
+                for (const [id, val] of Object.entries(levels)) {
+                  const bar = document.getElementById(`vu-${id}`);
+                  if (bar) bar.style.width = Math.min(100, Number(val)*100).toFixed(1) + '%';
+                }
+              } catch {}
+            }, 500);
+          } catch (e) {
+            alert('Echec du test micro: ' + e.message);
+          }
+          refreshPrereqs();
+        });
+
+        micStart.addEventListener('click', async () => {
+          try {
+            // collect current selection from checkboxes
+            selectedMicIds = availableMics.filter(m => {
+              const c = document.getElementById(`check-${m.mic_id}`);
+              return c && c.checked;
+            }).map(m => m.mic_id);
+            await fetch(API_BASE + '/start_mic_test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mic_ids: selectedMicIds })});
+          } catch {}
+        });
+        micStop.addEventListener('click', async () => {
+          try { await fetch(API_BASE + '/stop_mic_test', { method: 'POST' }); } catch {}
+          if (micLevelsTimer) { clearInterval(micLevelsTimer); micLevelsTimer = null; }
+        });
+        micSave.addEventListener('click', async () => {
+          // Save names and selection
+          selectedMicIds = [];
+          availableMics.forEach(m => {
+            const el = document.getElementById(`person-${m.mic_id}`);
+            if (el) personNamesByMicId.set(m.mic_id, el.value.trim() || `Mic ${m.mic_id}`);
+            const c = document.getElementById(`check-${m.mic_id}`);
+            if (c && c.checked) selectedMicIds.push(m.mic_id);
+          });
+          // Stop test and close
+          try { await fetch(API_BASE + '/stop_mic_test', { method: 'POST' }); } catch {}
+          if (micLevelsTimer) { clearInterval(micLevelsTimer); micLevelsTimer = null; }
+          micDialog.style.display = 'none';
+          refreshPrereqs();
+        });
+        micClose.addEventListener('click', async () => {
+          try { await fetch(API_BASE + '/stop_mic_test', { method: 'POST' }); } catch {}
+          if (micLevelsTimer) { clearInterval(micLevelsTimer); micLevelsTimer = null; }
+          micDialog.style.display = 'none';
+        });
+
         // Gestionnaire pour le bouton Démarrer
         startBtn.addEventListener('click', () => {
             isTranscribing = true;
             startBtn.textContent = 'Transcription en cours...';
             updateButtonStates();
             console.log('Transcription démarrée');
-            // DEMO: appelle l'API pour détecter les micros puis démarre
-            fetch(API_BASE + '/detect_mics')
-              .then(r => r.json())
-              .then(data => {
-                const mics = data.mics || [];
-                const assignments = mics.map(m => ({ mic_id: m.mic_id, person_name: `Mic ${m.mic_id}`}));
-                return fetch(API_BASE + '/start_transcription', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ assignments })
-                });
-              })
+            // Ensure mic test is stopped
+            fetch(API_BASE + '/stop_mic_test', { method: 'POST' }).catch(()=>{});
+            // Use availableMics and saved names; fetch if empty
+            const startFlow = async () => {
+              if (!availableMics.length) {
+                const data = await fetch(API_BASE + '/detect_mics').then(r=>r.json());
+                availableMics = data.mics || [];
+              }
+              // Use selected ids; if none, block start
+              if (!selectedMicIds.length) {
+                alert('Aucun micro sélectionné');
+                throw new Error('no mic selected');
+              }
+              const assignments = availableMics
+                .filter(m => selectedMicIds.includes(m.mic_id))
+                .map(m => ({ mic_id: m.mic_id, person_name: personNamesByMicId.get(m.mic_id) || `Mic ${m.mic_id}`}));
+              await fetch(API_BASE + '/start_transcription', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assignments })
+              });
+            };
+            startFlow()
               .then(() => {
                 // démarrer polling
                 startPolling();
@@ -388,8 +531,7 @@
         
         // Fonction pour mettre à jour l'état des boutons
         function updateButtonStates() {
-            startBtn.disabled = isTranscribing;
-            stopBtn.disabled = !isTranscribing;
+            refreshPrereqs();
         }
         
         // Fermer la popup si on clique en dehors

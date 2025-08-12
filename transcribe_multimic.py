@@ -10,6 +10,7 @@ import whisper
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from datetime import datetime
+from typing import Dict, List, Optional
 
 app = Flask(__name__)
 CORS(app)
@@ -27,6 +28,12 @@ mic_id_to_person = {}
 
 # Dernier chemin de transcription sauvegardé
 auto_saved_transcription_path = None
+
+# Preview levels (VU-meter) state
+preview_threads: Dict[int, threading.Thread] = {}
+preview_stop_event = threading.Event()
+mic_levels: Dict[int, float] = {}
+mic_levels_lock = threading.Lock()
 
 # Queue pour communication entre thread capture et transcription
 audio_queue = queue.Queue()
@@ -61,6 +68,15 @@ def detect_mics():
         })
     return data
 
+# Santé du serveur
+@app.route('/healthz', methods=['GET'])
+def api_healthz():
+    try:
+        _ = model  # ensure loaded
+        return jsonify({"ok": True}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 # Choisit un taux d'échantillonnage supporté par ce device
 def choose_supported_samplerate(device_index: int) -> int:
     preferred = [16000, 48000, 44100, 32000, 22050, 8000]
@@ -78,6 +94,69 @@ def choose_supported_samplerate(device_index: int) -> int:
         return dsr
     except Exception:
         return 16000
+
+# Thread de preview niveau pour un device donné
+def _preview_level_worker(device_index: int, mic_id: int):
+    fs = choose_supported_samplerate(device_index)
+    blocksize = 1024
+    dtype = 'int16'
+    try:
+        with sd.InputStream(device=device_index, channels=1, samplerate=fs, blocksize=blocksize, dtype=dtype) as stream:
+            while not preview_stop_event.is_set():
+                data, _ = stream.read(blocksize)
+                if data is None:
+                    continue
+                # Calcul RMS normalisé 0..1
+                arr = data.astype('float32') / 32768.0
+                rms = float(np.sqrt(np.mean(arr ** 2)))
+                with mic_levels_lock:
+                    mic_levels[mic_id] = rms
+    except Exception as e:
+        with mic_levels_lock:
+            mic_levels[mic_id] = -1.0
+
+@app.route('/start_mic_test', methods=['POST'])
+def api_start_mic_test():
+    global preview_threads
+    # empêcher conflit avec capture
+    if capture_threads:
+        return jsonify({"status": "error", "message": "Transcription en cours"}), 400
+    content = request.json or {}
+    requested_ids: Optional[List[int]] = content.get('mic_ids')
+    mics = detect_mics()
+    mic_map = {m['mic_id']: m['device_index'] for m in mics}
+
+    preview_stop_event.clear()
+    with mic_levels_lock:
+        mic_levels.clear()
+    preview_threads = {}
+
+    ids = requested_ids if requested_ids else list(mic_map.keys())
+    for mic_id in ids:
+        if mic_id not in mic_map:
+            continue
+        device_index = mic_map[mic_id]
+        t = threading.Thread(target=_preview_level_worker, args=(device_index, mic_id), daemon=True)
+        t.start()
+        preview_threads[mic_id] = t
+    return jsonify({"status": "started", "mic_ids": ids})
+
+@app.route('/mic_levels', methods=['GET'])
+def api_mic_levels():
+    with mic_levels_lock:
+        levels = dict(mic_levels)
+    return jsonify({"levels": levels})
+
+@app.route('/stop_mic_test', methods=['POST'])
+def api_stop_mic_test():
+    preview_stop_event.set()
+    for t in list(preview_threads.values()):
+        try:
+            t.join(timeout=1)
+        except Exception:
+            pass
+    preview_threads.clear()
+    return jsonify({"status": "stopped"})
 
 # Fonction pour enregistrer par segments avec horodatage et placer dans queue
 def record_segments(device_index, mic_id, segment_duration=30, chunk_duration=2):
