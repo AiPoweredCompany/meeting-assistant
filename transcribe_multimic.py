@@ -25,34 +25,61 @@ audio_queue = queue.Queue()
 # Chargement modèle Whisper une fois au démarrage
 model = whisper.load_model("base")
 
-# Fonction pour détecter les micros USB (carte ALSA)
+# Fonction pour détecter les micros via PortAudio/sounddevice
+# Retourne une liste de dicts: {mic_id, device_index, name, default_samplerate}
 def detect_mics():
-    result = subprocess.run(['arecord', '-l'], capture_output=True, text=True)
-    lines = result.stdout.split('\n')
-    mics = []
-    for line in lines:
-        if 'card' in line and 'USB' in line:
-            parts = line.split()
-            card_index = None
-            device_index = None
-            for i, part in enumerate(parts):
-                if part == 'card':
-                    card_index = parts[i+1].strip(':')
-                if part == 'device':
-                    device_index = parts[i+1].strip(':')
-            if card_index is not None and device_index is not None:
-                mics.append((int(card_index), int(device_index)))
-    return mics
+    devices = sd.query_devices()
+    inputs = []
+    for idx, d in enumerate(devices):
+        try:
+            max_in = d.get('max_input_channels', 0)
+        except Exception:
+            max_in = 0
+        if max_in and max_in > 0:
+            inputs.append({
+                "device_index": idx,
+                "name": d.get('name', f'device-{idx}'),
+                "default_samplerate": d.get('default_samplerate', None)
+            })
+    # Attribuer des mic_id 1..N pour l'UI
+    data = []
+    for i, info in enumerate(inputs, start=1):
+        data.append({
+            "mic_id": i,
+            "device_index": info["device_index"],
+            "name": info["name"],
+            "default_samplerate": info["default_samplerate"],
+        })
+    return data
 
-# Fonction pour enregistrer par segments de 30s avec horodatage et placer dans queue
-def record_segments(card, device, mic_id, segment_duration=30, fs=16000):
-    device_name = f"hw:{card},{device}"
-    print(f"[{mic_id}] Démarrage capture segmentée sur {device_name}")
+# Choisit un taux d'échantillonnage supporté par ce device
+def choose_supported_samplerate(device_index: int) -> int:
+    preferred = [16000, 48000, 44100, 32000, 22050, 8000]
+    for sr in preferred:
+        try:
+            sd.check_input_settings(device=device_index, samplerate=sr, channels=1)
+            return sr
+        except Exception:
+            continue
+    # fallback: utiliser le samplerate par défaut du device
+    try:
+        d = sd.query_devices(device_index)
+        dsr = int(d.get('default_samplerate', 16000))
+        sd.check_input_settings(device=device_index, samplerate=dsr, channels=1)
+        return dsr
+    except Exception:
+        return 16000
+
+# Fonction pour enregistrer par segments avec horodatage et placer dans queue
+def record_segments(device_index, mic_id, segment_duration=30):
+    # Choisir un SR supporté par le device
+    fs = choose_supported_samplerate(device_index)
+    print(f"[{mic_id}] Démarrage capture segmentée sur device #{device_index} @ {fs} Hz")
     while not stop_event.is_set():
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
         filename = f"audio_{mic_id}_{timestamp}.wav"
         try:
-            recording = sd.rec(int(segment_duration * fs), samplerate=fs, channels=1, dtype='int16', device=device_name)
+            recording = sd.rec(int(segment_duration * fs), samplerate=fs, channels=1, dtype='int16', device=device_index)
             sd.wait()
             with wave.open(filename, 'wb') as wf:
                 wf.setnchannels(1)
@@ -98,9 +125,7 @@ def transcription_worker():
 @app.route('/detect_mics', methods=['GET'])
 def api_detect_mics():
     mics = detect_mics()
-    # Retourner liste indexée pour assignation dans UI
-    data = [{"mic_id": idx+1, "card": c, "device": d} for idx, (c, d) in enumerate(mics)]
-    return jsonify({"mics": data})
+    return jsonify({"mics": mics})
 
 @app.route('/start_transcription', methods=['POST'])
 def api_start_transcription():
@@ -118,17 +143,17 @@ def api_start_transcription():
     transcription_results.clear()
     recording_threads = []
 
-    # Détecter micros disponibles (carte ALSA)
+    # Détecter micros disponibles (PortAudio)
     mics = detect_mics()
-    mic_map = {idx+1: (c, d) for idx, (c, d) in enumerate(mics)}
+    mic_map = {m['mic_id']: m['device_index'] for m in mics}
 
     # Lancer capture segmentée sur chaque micro assigné
     for a in assignments:
         mic_id = a['mic_id']
         if mic_id not in mic_map:
             return jsonify({"status": "error", "message": f"Mic ID {mic_id} non détecté"}), 400
-        c, d = mic_map[mic_id]
-        t = threading.Thread(target=record_segments, args=(c, d, mic_id))
+        device_index = mic_map[mic_id]
+        t = threading.Thread(target=record_segments, args=(device_index, mic_id))
         t.start()
         recording_threads.append(t)
 
