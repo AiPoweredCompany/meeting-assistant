@@ -250,8 +250,29 @@
             startBtn.textContent = 'Transcription en cours...';
             updateButtonStates();
             console.log('Transcription démarrée');
-            // Ici, vous ajouteriez le code pour démarrer la transcription
-        });
+            // DEMO: appelle l'API pour détecter les micros puis démarre
+            fetch('http://127.0.0.1:5000/detect_mics')
+              .then(r => r.json())
+              .then(data => {
+                const mics = data.mics || [];
+                const assignments = mics.map(m => ({ mic_id: m.mic_id, person_name: `Mic ${m.mic_id}`}));
+                return fetch('http://127.0.0.1:5000/start_transcription', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ assignments })
+                });
+              })
+              .then(() => {
+                // démarrer polling
+                startPolling();
+              })
+              .catch(err => {
+                alert('Impossible de démarrer: ' + err.message);
+                isTranscribing = false;
+                startBtn.textContent = 'Démarrer la transcription';
+                updateButtonStates();
+              });
+        
         
         // Gestionnaire pour le bouton Arrêter
         stopBtn.addEventListener('click', () => {
@@ -259,8 +280,12 @@
             startBtn.textContent = 'Démarrer la transcription';
             updateButtonStates();
             console.log('Transcription arrêtée');
-            // Ici, vous ajouteriez le code pour arrêter la transcription
-        });
+            fetch('http://127.0.0.1:5000/stop_transcription', { method: 'POST' })
+              .catch(() => {})
+              .finally(() => {
+                stopPolling();
+              });
+        
         
         // Gestionnaire pour le bouton Ouvrir
         openBtn.addEventListener('click', () => {
@@ -367,6 +392,25 @@
                 fileInput.value = '';
             }
         });
+        let pollTimer = null;
+        function startPolling() {
+          if (pollTimer) return;
+          pollTimer = setInterval(() => {
+            fetch('http://127.0.0.1:5000/get_transcriptions')
+              .then(r => r.json())
+              .then(data => {
+                if (!data) return;
+                console.log('Live transcription:', data.transcription);
+              })
+              .catch(() => {});
+          }, 5000);
+        }
+        function stopPolling() {
+          if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+          }
+        }
     </script>
 </body>
 </html>
