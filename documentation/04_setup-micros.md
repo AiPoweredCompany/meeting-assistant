@@ -230,3 +230,34 @@ Si tu veux, je peux t’aider aussi avec un exemple simple d’UI JS pour faire 
 ---
 
 Dis-moi si tu veux ça, ou si tu souhaites qu’on commence par déployer et tester ce backend sur ton Pi !
+
+---
+
+## 5. Schéma du flux d'actions (UI ↔ API ↔ Capture ↔ Transcription)
+
+```mermaid
+flowchart TD
+  A[UI: Demarrer la transcription] --> B[GET /detect_mics]
+  B -->|mics with mic_id, device_index| C[Client builds assignments and person_name]
+  C --> D[POST /start_transcription]
+  D --> D1[Reset state]
+  D --> D2[Map mic_id to device_index]
+  D --> D3[Store mic_id to person_name]
+  D --> E{For each mic}
+  E -->|spawn thread| F[record_segments]
+  D --> G[Start transcription_worker]
+  F -->|15s wav segment| H[Queue]
+  H --> I[transcription_worker]
+  I -->|transcribe| J[Append to results]
+  J --> K[GET /get_transcriptions returns merged text]
+
+  A2[UI: Arreter la transcription] --> L[POST /stop_transcription]
+  L --> M[signal capture_stop_event]
+  M --> N[stop capture threads and flush partial segments]
+  N --> O[wait for queue to drain]
+  O --> P[signal worker_stop_event and join]
+  P --> Q[save file full_transcription_YYYYMMDD_HHMMSS.txt]
+  Q --> R[return JSON with file_path]
+
+  K --> S[GET /download_transcription saves new file]
+```

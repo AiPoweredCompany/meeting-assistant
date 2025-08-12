@@ -15,9 +15,18 @@ app = Flask(__name__)
 CORS(app)
 
 # Global variables pour stocker l’état
-recording_threads = []
+capture_threads = []
+worker_thread = None
 transcription_results = []
-stop_event = threading.Event()
+# Deux événements séparés pour éviter les arrêts intempestifs
+capture_stop_event = threading.Event()      # arrête la capture
+worker_stop_event = threading.Event()       # arrête le worker quand la file est vide
+
+# Mapping mic_id -> person_name pour affichage
+mic_id_to_person = {}
+
+# Dernier chemin de transcription sauvegardé
+auto_saved_transcription_path = None
 
 # Queue pour communication entre thread capture et transcription
 audio_queue = queue.Queue()
@@ -71,31 +80,63 @@ def choose_supported_samplerate(device_index: int) -> int:
         return 16000
 
 # Fonction pour enregistrer par segments avec horodatage et placer dans queue
-def record_segments(device_index, mic_id, segment_duration=30):
+def record_segments(device_index, mic_id, segment_duration=30, chunk_duration=2):
     # Choisir un SR supporté par le device
     fs = choose_supported_samplerate(device_index)
     print(f"[{mic_id}] Démarrage capture segmentée sur device #{device_index} @ {fs} Hz")
-    while not stop_event.is_set():
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"audio_{mic_id}_{timestamp}.wav"
+
+    # Accumulateur pour constituer un segment à partir de petits morceaux
+    chunks = []
+    collected_samples = 0
+    samples_per_segment = int(segment_duration * fs)
+    samples_per_chunk = max(1, int(chunk_duration * fs))
+
+    while not capture_stop_event.is_set():
         try:
-            recording = sd.rec(int(segment_duration * fs), samplerate=fs, channels=1, dtype='int16', device=device_index)
+            # Enregistrer un petit morceau afin de pouvoir s'arrêter rapidement
+            small = sd.rec(samples_per_chunk, samplerate=fs, channels=1, dtype='int16', device=device_index)
             sd.wait()
+            chunks.append(small)
+            collected_samples += len(small)
+
+            if collected_samples >= samples_per_segment:
+                # Écrire le segment et l'envoyer à la transcription
+                timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+                filename = f"audio_{mic_id}_{timestamp}.wav"
+                with wave.open(filename, 'wb') as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(fs)
+                    wf.writeframes(np.concatenate(chunks, axis=0).tobytes())
+                print(f"[{mic_id}] Segment enregistré : {filename}")
+                audio_queue.put((mic_id, filename, timestamp))
+                # Reset accumulateur pour le prochain segment
+                chunks = []
+                collected_samples = 0
+        except Exception as e:
+            print(f"[{mic_id}] Erreur enregistrement : {e}")
+            break
+
+    # Si on arrête et qu'il reste des données partielles, on les flush en dernier segment
+    if collected_samples > 0 and len(chunks) > 0:
+        try:
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+            filename = f"audio_{mic_id}_{timestamp}.wav"
             with wave.open(filename, 'wb') as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
                 wf.setframerate(fs)
-                wf.writeframes(recording.tobytes())
-            print(f"[{mic_id}] Segment enregistré : {filename}")
+                wf.writeframes(np.concatenate(chunks, axis=0).tobytes())
+            print(f"[{mic_id}] Segment partiel enregistré (arrêt): {filename}")
             audio_queue.put((mic_id, filename, timestamp))
         except Exception as e:
-            print(f"[{mic_id}] Erreur enregistrement : {e}")
-            break
+            print(f"[{mic_id}] Échec flush segment partiel: {e}")
+
     print(f"[{mic_id}] Fin capture")
 
 # Thread transcription : récupère fichiers depuis queue, transcrit, stocke résultats
 def transcription_worker():
-    while not stop_event.is_set() or not audio_queue.empty():
+    while not worker_stop_event.is_set() or not audio_queue.empty():
         try:
             mic_id, filename, timestamp = audio_queue.get(timeout=1)
         except queue.Empty:
@@ -107,6 +148,7 @@ def transcription_worker():
             # Stocker dans global (thread safe ? ici simplifié)
             transcription_results.append({
                 "mic_id": mic_id,
+                "person_name": mic_id_to_person.get(mic_id),
                 "timestamp": timestamp,
                 "text": text
             })
@@ -129,8 +171,8 @@ def api_detect_mics():
 
 @app.route('/start_transcription', methods=['POST'])
 def api_start_transcription():
-    global recording_threads, transcription_results, stop_event
-    if recording_threads:
+    global capture_threads, worker_thread, transcription_results, mic_id_to_person, auto_saved_transcription_path
+    if capture_threads or worker_thread:
         return jsonify({"status": "error", "message": "Transcription déjà en cours"}), 400
 
     content = request.json
@@ -139,39 +181,63 @@ def api_start_transcription():
     if not assignments:
         return jsonify({"status": "error", "message": "Pas d'assignation fournie"}), 400
 
-    stop_event.clear()
+    capture_stop_event.clear()
+    worker_stop_event.clear()
     transcription_results.clear()
-    recording_threads = []
+    auto_saved_transcription_path = None
+    capture_threads = []
+    worker_thread = None
 
     # Détecter micros disponibles (PortAudio)
     mics = detect_mics()
     mic_map = {m['mic_id']: m['device_index'] for m in mics}
 
-    # Lancer capture segmentée sur chaque micro assigné
+    # Enregistrer les noms de personnes et lancer capture segmentée
+    mic_id_to_person = {a['mic_id']: a.get('person_name') for a in assignments if a.get('mic_id')}
     for a in assignments:
         mic_id = a['mic_id']
         if mic_id not in mic_map:
             return jsonify({"status": "error", "message": f"Mic ID {mic_id} non détecté"}), 400
         device_index = mic_map[mic_id]
-        t = threading.Thread(target=record_segments, args=(device_index, mic_id))
+        t = threading.Thread(target=record_segments, args=(device_index, mic_id), kwargs={"segment_duration": 15, "chunk_duration": 2}, daemon=True)
         t.start()
-        recording_threads.append(t)
+        capture_threads.append(t)
 
     # Lancer thread transcription
-    t_trans = threading.Thread(target=transcription_worker)
-    t_trans.start()
-    recording_threads.append(t_trans)
+    worker_thread = threading.Thread(target=transcription_worker, daemon=True)
+    worker_thread.start()
 
     return jsonify({"status": "started", "message": f"Transcription démarrée pour {len(assignments)} micros"})
 
 @app.route('/stop_transcription', methods=['POST'])
 def api_stop_transcription():
-    global stop_event, recording_threads
-    stop_event.set()
-    for t in recording_threads:
-        t.join()
-    recording_threads.clear()
-    return jsonify({"status": "stopped"})
+    global capture_threads, worker_thread, auto_saved_transcription_path
+    # Arrêter la capture d'abord
+    capture_stop_event.set()
+    for t in capture_threads:
+        try:
+            t.join(timeout=2)
+        except Exception:
+            pass
+    capture_threads.clear()
+
+    # Attendre la fin du traitement de la file, puis arrêter le worker
+    try:
+        audio_queue.join()
+    except Exception:
+        pass
+    worker_stop_event.set()
+    if worker_thread:
+        try:
+            worker_thread.join(timeout=2)
+        except Exception:
+            pass
+        worker_thread = None
+
+    # Auto-save transcription and return path
+    auto_saved_transcription_path = _save_full_transcription()
+
+    return jsonify({"status": "stopped", "file_path": auto_saved_transcription_path})
 
 @app.route('/get_transcriptions', methods=['GET'])
 def api_get_transcriptions():
@@ -182,19 +248,26 @@ def api_get_transcriptions():
     for tr in sorted_transcripts:
         dt = datetime.strptime(tr['timestamp'], "%Y%m%d_%H%M%S_%f")
         timestamp_str = dt.strftime("%H:%M:%S")
-        full_text += f"[{timestamp_str}] Micro {tr['mic_id']}: {tr['text']}\n"
+        label = tr.get('person_name') or f"Micro {tr['mic_id']}"
+        full_text += f"[{timestamp_str}] {label}: {tr['text']}\n"
     return jsonify({"transcription": full_text})
 
-@app.route('/download_transcription', methods=['GET'])
-def api_download_transcription():
+def _save_full_transcription() -> str:
     sorted_transcripts = sorted(transcription_results, key=lambda x: x['timestamp'])
-    filename = "full_transcription.txt"
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    filename = f"full_transcription_{ts}.txt"
     with open(filename, "w", encoding="utf-8") as f:
         for tr in sorted_transcripts:
             dt = datetime.strptime(tr['timestamp'], "%Y%m%d_%H%M%S_%f")
             timestamp_str = dt.strftime("%H:%M:%S")
-            f.write(f"[{timestamp_str}] Micro {tr['mic_id']}: {tr['text']}\n")
-    return send_file(filename, as_attachment=True)
+            label = tr.get('person_name') or f"Micro {tr['mic_id']}"
+            f.write(f"[{timestamp_str}] {label}: {tr['text']}\n")
+    return os.path.abspath(filename)
+
+@app.route('/download_transcription', methods=['GET'])
+def api_download_transcription():
+    path = _save_full_transcription()
+    return send_file(path, as_attachment=True)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
