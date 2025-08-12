@@ -272,6 +272,7 @@
                 startBtn.textContent = 'Démarrer la transcription';
                 updateButtonStates();
               });
+        });
         
         
         // Gestionnaire pour le bouton Arrêter
@@ -285,6 +286,7 @@
               .finally(() => {
                 stopPolling();
               });
+        });
         
         
         // Gestionnaire pour le bouton Ouvrir
