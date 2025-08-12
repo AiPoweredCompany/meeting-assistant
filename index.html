@@ -349,9 +349,11 @@
 
                         const w = window.open('', '_blank');
                         const escapeHtml = (s) => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-                        w.document.write('<pre style="white-space:pre-wrap;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \\'Liberation Mono\\', \\'Courier New\\', monospace; padding:16px;">' +
-                            escapeHtml(data.summary || '') +
-                            '</pre>');
+                        w.document.write(`
+                            <pre style="white-space:pre-wrap;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; padding:16px;">
+                                ${escapeHtml(data.summary || '')}
+                            </pre>
+                        `);
 
                         fileDialog.style.display = 'none';
                         fileInput.value = '';
