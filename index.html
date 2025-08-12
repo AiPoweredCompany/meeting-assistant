@@ -146,7 +146,7 @@
         }
         
         /* Popup de sélection de fichier (masquée par défaut) */
-        #fileDialog, #micDialog {
+        #fileDialog, #micDialog, #infoDialog {
             display: none;
             position: fixed;
             top: 0;
@@ -251,10 +251,22 @@
             </div>
         </div>
     </div>
+
+    <!-- Popup info / statut -->
+    <div id="infoDialog">
+        <div class="dialog-content">
+            <h3 class="dialog-title" id="infoTitle">Statut</h3>
+            <div id="infoBody" style="margin-top:10px"></div>
+            <div class="dialog-buttons">
+                <button id="infoClose" class="dialog-btn confirm-btn" disabled>Fermer</button>
+            </div>
+        </div>
+    </div>
     
     <script>
         // Base API: même hôte que cette page, port 5000
         const API_BASE = window.location.protocol + '//' + window.location.hostname + ':5000';
+        const escapeHtml = (s) => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
         
         // État de la transcription
         let isTranscribing = false;
@@ -275,6 +287,10 @@
         const micStop = document.getElementById('micStop');
         const micSave = document.getElementById('micSave');
         const micClose = document.getElementById('micClose');
+        const infoDialog = document.getElementById('infoDialog');
+        const infoTitle = document.getElementById('infoTitle');
+        const infoBody = document.getElementById('infoBody');
+        const infoClose = document.getElementById('infoClose');
         
         // Etat de santé serveur et micros
         let serverHealthy = false;
@@ -282,12 +298,21 @@
         let selectedMicIds = [];
         const personNamesByMicId = new Map();
         let micLevelsTimer = null;
+        let isStopping = false;
 
         function refreshPrereqs() {
           const hasSelection = selectedMicIds && selectedMicIds.length > 0;
-          startBtn.disabled = !(serverHealthy && hasSelection) || isTranscribing;
-          stopBtn.disabled = !isTranscribing;
+          startBtn.disabled = !(serverHealthy && hasSelection) || isTranscribing || isStopping;
+          stopBtn.disabled = !isTranscribing || isStopping;
         }
+
+        function openInfo(title, html, closable) {
+          infoTitle.textContent = title;
+          infoBody.innerHTML = html;
+          infoClose.disabled = !closable;
+          infoDialog.style.display = 'flex';
+        }
+        infoClose.addEventListener('click', () => { infoDialog.style.display = 'none'; });
 
         // Test serveur
         healthBtn.addEventListener('click', async () => {
@@ -422,16 +447,27 @@
         
         
         // Gestionnaire pour le bouton Arrêter
-        stopBtn.addEventListener('click', () => {
+        stopBtn.addEventListener('click', async () => {
             isTranscribing = false;
+            isStopping = true;
             startBtn.textContent = 'Démarrer la transcription';
             updateButtonStates();
-            console.log('Transcription arrêtée');
-            fetch(API_BASE + '/stop_transcription', { method: 'POST' })
-              .catch(() => {})
-              .finally(() => {
-                stopPolling();
-              });
+            console.log('Transcription arrêtée (drain en cours)');
+            openInfo('Transcription', 'Transcription en cours… merci de patienter.', false);
+            stopPolling();
+            try {
+              const res = await fetch(API_BASE + '/stop_transcription', { method: 'POST' });
+              const data = await res.json();
+              const path = data && data.file_path ? data.file_path : '(chemin indisponible)';
+              infoBody.innerHTML = 'Transcription terminée.<br/>Fichier: <code>' + escapeHtml(path) + '</code>';
+              infoClose.disabled = false;
+            } catch (e) {
+              infoBody.textContent = 'Erreur: ' + e.message;
+              infoClose.disabled = false;
+            } finally {
+              isStopping = false;
+              refreshPrereqs();
+            }
         });
         
         
